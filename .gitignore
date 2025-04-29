@@ -3,6 +3,7 @@ __pycache__/
 GeminiClient.py
 test5.py
 .venv
+__init__.py
 
 *.txt
 
