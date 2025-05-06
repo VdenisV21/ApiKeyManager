@@ -47,18 +47,9 @@ class ApiKeyManager:
     automatic daily usage reset, and temporary cooldowns.
     Configuration is saved in the JSON file.
 
-    Key Features:
-    - Persistence: Loads and saves key usage and configuration from/to a JSON file.
-    - Rate Limiting: Enforces Requests Per Day (RPD), Requests Per Minute (RPM),
-      Tokens Per Day (TPD), and Tokens Per Minute (TPM).
-    - Automatic Reset: Resets daily usage counters based on configurable rules
-      (UTC hour and/or interval in days).
-    - Cooldowns: Allows keys to be temporarily marked unusable (e.g., after specific errors).
-    - Context Manager: Provides `__enter__`/`__exit__` for easy key acquisition and usage recording.
-
     *** NOTE: This implementation is NOT thread-safe. ***
     Do not share instances of this class across multiple threads without
-    external locking, as file I/O and internal state updates are not protected.
+    external locking.
 
     Attributes:
         json_file (str): Path to the JSON file storing key data and config.
@@ -162,17 +153,8 @@ class ApiKeyManager:
         return time.monotonic()
 
     def _load_or_initialize_data(self):
-        """Loads data and config from JSON, merges with init args, or initializes a new file.
-
-        This is the main entry point for setting up the `self.data` dictionary.
-        It handles:
-        - Loading from `self.json_file` if it exists.
-        - Initializing a new structure if the file doesn't exist.
-        - Merging configuration from the file with values passed to `__init__`.
-        - Validating loaded data (keys, config, last_reset_time) and correcting if needed.
-        - Performing an initial check for usage reset.
-        - Cleaning up expired timestamps/cooldowns.
-        - Saving the data immediately if initialization or correction occurred.
+        """Loads data and config, merging with init args, or initializes.
+           Also performs initial reset check and timestamp cleanup.
         """
         if os.path.exists(self.json_file):
             self._load_from_file()
@@ -184,11 +166,7 @@ class ApiKeyManager:
         self._cleanup_timestamps_internal()
 
     def _load_from_file(self):
-        """Loads data from the existing JSON file and merges config.
-
-        Handles JSON decoding, basic structure validation, config merging,
-        and key data validation/correction.
-        """
+        """Loads data from the existing JSON file and merges config."""
         now_utc_iso = self._get_now_utc().isoformat()
         config_needs_save = False
 
@@ -219,22 +197,22 @@ class ApiKeyManager:
                 config_needs_save = True
 
             # Validate/Initialize 'config'
-            saved_config = loaded_data.get('config', {}) # Default to empty dict if missing
+            saved_config = loaded_data.get('config', {})
             if not isinstance(saved_config, dict):
                 logger.warning(f"'config' is not a dict in {self.json_file}. Initializing empty.")
                 saved_config = {}
             loaded_data['config'] = saved_config # Ensure 'config' key exists
 
-            # Merge saved config with init args (init args take precedence)
+            # Merge saved config with init args
             effective_config, config_merged = self._merge_configs(saved_config)
             if config_merged:
                 config_needs_save = True
 
-            # Update instance attributes (e.g., self.daily_limit) from the effective config
+            # Update instance attributes from the effective config
             for param, value in effective_config.items():
                 setattr(self, param, value)
 
-            # Validate and potentially correct key usage data (e.g., ensure non-negative)
+            # Validate and potentially correct key data
             keys_data_corrected = self._validate_and_correct_key_data(loaded_data.get('keys', {}))
 
             self.data = loaded_data
@@ -255,11 +233,7 @@ class ApiKeyManager:
             raise ApiKeyManagerError(f"Error processing data from {self.json_file}: {e}")
 
     def _initialize_new_file(self):
-        """Initializes data structure for a new file.
-
-        Uses configuration values passed to `__init__` (if any) and saves
-        the initial structure immediately.
-        """
+        """Initializes data structure for a new file."""
         logger.info(f"JSON file '{self.json_file}' not found. Initializing new data structure.")
         # Use the init args provided (which might be None)
         for param, value in self._init_args.items():
@@ -274,10 +248,7 @@ class ApiKeyManager:
         self._save_data_internal() # Save initial structure immediately
 
     def _merge_configs(self, saved_config: dict) -> tuple[dict, bool]:
-        """Merges saved config with init args, returning effective config and a flag if changes were made.
-
-        Prioritizes values passed to `__init__` over values loaded from the file.
-        """
+        """Merges saved config with init args, returning effective config and a flag if changes were made."""
         effective_config = {}
         config_changed = False
         for param in CONFIG_PARAMS:
@@ -285,18 +256,15 @@ class ApiKeyManager:
             saved_val = saved_config.get(param)
 
             if init_val is not None:
-                # Init value takes precedence
                 effective_config[param] = init_val
                 if saved_val != init_val or param not in saved_config:
                     if saved_val != init_val and saved_val is not None:
                          logger.warning(f"Initialization value for '{param}' ({init_val}) overrides saved value ({saved_val}) in {self.json_file}.")
                     config_changed = True
             elif saved_val is not None:
-                # Use saved value if no init value provided
                 effective_config[param] = saved_val
                 logger.info(f"Loaded '{param}' ({saved_val}) from {self.json_file}.")
             else:
-                # No value from init or saved file
                 effective_config[param] = None
                 if param not in saved_config:
                     config_changed = True # Ensure key exists in saved config eventually
@@ -304,11 +272,7 @@ class ApiKeyManager:
         return effective_config, config_changed
 
     def _validate_and_correct_key_data(self, keys_dict: dict) -> bool:
-        """Validates usage fields ('usage_today', 'tokens_today') in loaded keys.
-
-        Corrects invalid values (e.g., non-numeric, negative) to 0.
-        Returns True if any correction occurred, False otherwise.
-        """
+        """Validates usage fields in loaded keys, corrects if necessary, returns True if correction occurred."""
         keys_data_corrected = False
         for key, key_data in keys_dict.items():
             if not isinstance(key_data, dict):
@@ -318,12 +282,10 @@ class ApiKeyManager:
                 continue
 
             usage_updated = False
-            # Ensure 'usage_today' is a non-negative number, default to 0
             if not isinstance(key_data.get('usage_today'), (int, float)) or key_data.get('usage_today', 0) < 0:
                 logger.warning(f"'usage_today' missing or invalid for key '{key}'. Setting to 0.")
                 key_data['usage_today'] = 0
                 usage_updated = True
-            # Ensure 'tokens_today' is a non-negative number, default to 0
             if not isinstance(key_data.get('tokens_today'), (int, float)) or key_data.get('tokens_today', 0) < 0:
                  logger.warning(f"'tokens_today' missing or invalid for key '{key}'. Setting to 0.")
                  key_data['tokens_today'] = 0
@@ -339,12 +301,7 @@ class ApiKeyManager:
         }
 
     def _save_data_internal(self):
-        """Saves the current state of `self.data` to the JSON file.
-
-        Uses an atomic write pattern (write to temp file, then replace original)
-        to minimize data loss risk during save.
-        Ensures config and usage data are valid before saving.
-        """
+        """Saves the current state of self.data to the JSON file, ensuring data integrity."""
         if not self.data:
             logger.error("Attempted to save data, but self.data is not initialized.")
             return
@@ -362,7 +319,7 @@ class ApiKeyManager:
                  logger.error(f"Invalid 'last_reset_time' ({last_reset_time_str}) format before saving. Forcing current time: {now_iso}.")
                  self.data['last_reset_time'] = now_iso
 
-            # Ensure usage data is non-negative numeric before saving
+            # Ensure usage data is non-negative numeric
             self._validate_and_correct_key_data(self.data.get('keys', {}))
 
             # Atomic write using temp file
@@ -370,7 +327,6 @@ class ApiKeyManager:
             with open(temp_file, 'w') as f:
                 json.dump(self.data, f, indent=4)
 
-            # Replace original file with temp file
             try:
                 os.replace(temp_file, self.json_file)
             except OSError as e:
@@ -395,7 +351,6 @@ class ApiKeyManager:
             raise ApiKeyManagerError(f"IOError saving data: {e}") from e
         except Exception as e:
             logger.error(f"An unexpected error occurred during save: {e}")
-            # Clean up temp file if it exists and an error occurred
             if 'temp_file' in locals() and os.path.exists(temp_file):
                  try: os.remove(temp_file)
                  except OSError: pass
@@ -403,15 +358,8 @@ class ApiKeyManager:
 
 
     def _check_and_reset_internal(self, now_utc: datetime):
-        """Checks if daily usage limits need resetting and performs the reset.
-
-        This method compares the current time (`now_utc`) with the calculated
-        next reset time based on the `last_reset_time` stored in `self.data`
-        and the configuration rules (`reset_hour_utc`, `reset_interval_days`).
-        If the current time is past the next reset time, it calls
-        `_perform_usage_reset` and updates `last_reset_time`.
-        """
-        if not self.data: return # Should not happen after init, but safeguard
+        """Checks if daily limits need resetting based on rules and performs the reset."""
+        if not self.data: return
 
         last_reset_time = self._parse_last_reset_time()
         original_last_reset_iso = last_reset_time.isoformat() if last_reset_time else None
@@ -423,7 +371,7 @@ class ApiKeyManager:
              self.data['last_reset_time'] = new_reset_time_iso
              logger.warning(f"Invalid or missing 'last_reset_time'. Setting to current check time: {new_reset_time_iso}")
              self._save_data_internal()
-             return # No reset check needed on this run, as we just set it
+             return # No reset check needed on this run
 
         # Calculate next reset time based on rules
         next_reset_occurrence = self._calculate_next_reset_time(last_reset_time)
@@ -434,11 +382,11 @@ class ApiKeyManager:
 
         if reset_needed:
             logger.info(f"Resetting daily usage counts. Reason: {reason}. Last reset: {last_reset_time.isoformat()}. Check time: {now_utc.isoformat()}")
-            keys_updated = self._perform_usage_reset() # Resets counts in self.data['keys']
+            keys_updated = self._perform_usage_reset()
             new_reset_time_iso = now_utc.isoformat() # Use current time as the new reset time
             self.data['last_reset_time'] = new_reset_time_iso
 
-            # Determine if save is required (e.g., if counts changed or interval passed)
+            # Determine if save is required
             save_required = self._determine_if_save_needed_after_reset(
                 keys_updated, reason, original_last_reset_iso, new_reset_time_iso
             )
@@ -452,9 +400,7 @@ class ApiKeyManager:
         if not last_reset_str:
             return None
         try:
-            # Attempt parsing from ISO format, handling potential 'Z' for UTC
             parsed_time = datetime.fromisoformat(str(last_reset_str).replace('Z', '+00:00'))
-            # Ensure the datetime object is timezone-aware and in UTC
             if parsed_time.tzinfo is None:
                 return parsed_time.replace(tzinfo=timezone.utc)
             elif parsed_time.tzinfo != timezone.utc:
@@ -466,68 +412,53 @@ class ApiKeyManager:
             return None
 
     def _calculate_next_reset_time(self, last_reset_time: datetime) -> typing.Optional[datetime]:
-        """Calculates the next scheduled reset time based on config rules.
-
-        Considers both `reset_interval_days` and `reset_hour_utc`.
-        Returns the earliest applicable future reset time.
-        """
+        """Calculates the next scheduled reset time based on config rules."""
         next_reset_by_interval = None
         next_reset_by_hour = None
 
-        # Calculate based on interval (if configured)
+        # Calculate based on interval
         if self.reset_interval_days is not None and self.reset_interval_days > 0:
             next_reset_by_interval = last_reset_time + timedelta(days=self.reset_interval_days)
 
-        # Calculate based on daily reset hour (if configured)
+        # Calculate based on daily reset hour
         if self.reset_hour_utc is not None:
             reset_dt = dt_time(self.reset_hour_utc, tzinfo=timezone.utc)
-            # Combine the date of the last reset with the configured reset hour
             potential_reset_this_cycle = datetime.combine(last_reset_time.date(), reset_dt)
 
             if potential_reset_this_cycle <= last_reset_time:
-                # If the reset time for the day of the last reset has already passed,
-                # the next reset based on the hour rule is tomorrow at that hour.
+                # Reset time for the day of the last reset has passed. Next is tomorrow.
                 next_reset_by_hour = datetime.combine(last_reset_time.date() + timedelta(days=1), reset_dt)
             else:
-                # If the reset time is later today (relative to last reset time),
-                # that's the next reset based on the hour rule.
+                # Reset time is later today (relative to last reset).
                 next_reset_by_hour = potential_reset_this_cycle
 
         # Determine the earliest applicable next reset time
         if next_reset_by_interval and next_reset_by_hour:
             return min(next_reset_by_interval, next_reset_by_hour)
         else:
-            # Return whichever one is configured (not None), or None if neither is set
-            return next_reset_by_interval or next_reset_by_hour
+            return next_reset_by_interval or next_reset_by_hour # Return whichever is not None
 
     def _get_reset_reason(self, last_reset_time: datetime, next_reset_occurrence: typing.Optional[datetime]) -> str:
-        """Determines the reason string for why a reset might be needed.
-
-        Checks which configuration rule (`reset_interval_days` or `reset_hour_utc`)
-        led to the calculated `next_reset_occurrence`.
-        """
+        """Determines the reason string for why a reset might be needed."""
         if next_reset_occurrence is None: return "No reset configured"
 
         reason_interval = ""
         if self.reset_interval_days is not None and self.reset_interval_days > 0:
              potential_interval_reset = last_reset_time + timedelta(days=self.reset_interval_days)
-             # Check if the interval rule determined the next reset time
              if potential_interval_reset == next_reset_occurrence:
                  reason_interval = f"interval of {self.reset_interval_days} days"
 
         reason_hour = ""
         if self.reset_hour_utc is not None:
-            # Check if the daily hour rule determined the next reset time
+            # Check if the next reset time matches the hour-based calculation logic
             reset_dt = dt_time(self.reset_hour_utc, tzinfo=timezone.utc)
             potential_reset_this_cycle = datetime.combine(last_reset_time.date(), reset_dt)
             potential_next_day_reset = datetime.combine(last_reset_time.date() + timedelta(days=1), reset_dt)
 
-            # Check if the next reset matches the logic used in _calculate_next_reset_time
             if (potential_reset_this_cycle > last_reset_time and next_reset_occurrence == potential_reset_this_cycle) or \
                (potential_reset_this_cycle <= last_reset_time and next_reset_occurrence == potential_next_day_reset):
                  reason_hour = f"daily reset hour UTC {self.reset_hour_utc:02d}:00"
 
-        # Combine the reasons
         if reason_interval and reason_hour:
             return f"Passed {reason_interval} and {reason_hour}"
         elif reason_interval:
@@ -539,11 +470,7 @@ class ApiKeyManager:
             return f"Calculated reset time {next_reset_occurrence.isoformat()} passed"
 
     def _perform_usage_reset(self) -> int:
-        """Resets 'usage_today' and 'tokens_today' to 0 for all keys in `self.data`.
-
-        Returns:
-            int: The number of keys whose usage counts were actually reset (were non-zero).
-        """
+        """Resets usage_today and tokens_today for all keys. Returns count of updated keys."""
         keys_updated = 0
         for key, key_data in self.data.get('keys', {}).items():
             if isinstance(key_data, dict):
@@ -557,7 +484,6 @@ class ApiKeyManager:
                 if usage_reset:
                     keys_updated += 1
             else:
-                # Log if key data is unexpectedly not a dictionary
                 logger.warning(f"Skipping reset for non-dict key data for key '{key[:4]}...{key[-4:]}': {key_data}")
         if keys_updated > 0:
              logger.info(f"Reset daily usage for {keys_updated} keys.")
@@ -566,16 +492,10 @@ class ApiKeyManager:
         return keys_updated
 
     def _determine_if_save_needed_after_reset(self, keys_updated: int, reason: str, original_iso: typing.Optional[str], new_iso: str) -> bool:
-        """Determines if saving is necessary after a reset check.
-
-        Saving is needed if:
-        - Usage counts were actually reset (`keys_updated > 0`).
-        - The reset was triggered by the interval rule (timestamp must update).
-        - The `last_reset_time` string actually changed.
-        """
+        """Determines if saving is necessary after a reset check."""
         if keys_updated > 0:
             return True # Always save if counts were reset
-        # Save if interval triggered, as timestamp *must* update even if counts were 0
+        # Save if interval triggered, as timestamp *must* update
         if self.reset_interval_days is not None and "interval" in reason:
             logger.info("Interval reset triggered, saving updated last_reset_time even though usage counts were zero.")
             return True
@@ -587,16 +507,9 @@ class ApiKeyManager:
         return False
 
     def _cleanup_timestamps_internal(self):
-        """Removes old timestamps/token entries and expired cooldowns from internal tracking.
-
-        This method cleans up the in-memory dictionaries used for RPM/TPM tracking
-        (`_key_timestamps`, `_key_token_timestamps`) and cooldowns (`_key_cooldowns`).
-        It removes entries older than 60 seconds (for RPM/TPM) or whose cooldown
-        expiry time has passed.
-        This prevents these dictionaries from growing indefinitely.
-        """
+        """Removes timestamps older than 1 minute from internal tracking and expired cooldowns."""
         now_mono = self._get_monotonic_time()
-        cutoff = now_mono - 60.0 # 60 seconds cutoff for minute limits
+        cutoff = now_mono - 60.0 # 60 seconds cutoff
 
         # Cleanup RPM timestamps (_key_timestamps)
         if self.requests_per_minute is not None:
@@ -610,93 +523,70 @@ class ApiKeyManager:
         self._cleanup_cooldowns(now_mono)
 
     def _cleanup_rpm_timestamps(self, cutoff: float):
-        """Removes old timestamps (older than cutoff) from _key_timestamps."""
+        """Removes old timestamps from _key_timestamps."""
         keys_to_clear = []
-        for key, timestamps in list(self._key_timestamps.items()): # Iterate over copy of items
-            # Keep only timestamps within the last minute
+        for key, timestamps in list(self._key_timestamps.items()):
             valid_timestamps = [ts for ts in timestamps if ts >= cutoff]
             if valid_timestamps:
                 self._key_timestamps[key] = valid_timestamps
             else:
-                # If no valid timestamps remain, mark key for removal from dict
                 keys_to_clear.append(key)
-        # Remove keys that have no recent timestamps
         for key in keys_to_clear:
             self._key_timestamps.pop(key, None)
 
     def _cleanup_tpm_timestamps(self, cutoff: float):
-        """Removes old entries (older than cutoff) from _key_token_timestamps."""
+        """Removes old entries from _key_token_timestamps."""
         keys_to_clear = []
-        for key, entries in list(self._key_token_timestamps.items()): # Iterate over copy of items
-            # Keep only entries (timestamp, tokens) within the last minute
+        for key, entries in list(self._key_token_timestamps.items()):
             valid_entries = [(ts, tokens) for ts, tokens in entries if ts >= cutoff]
             if valid_entries:
                 self._key_token_timestamps[key] = valid_entries
             else:
-                # If no valid entries remain, mark key for removal from dict
                 keys_to_clear.append(key)
-        # Remove keys that have no recent token usage
         for key in keys_to_clear:
             self._key_token_timestamps.pop(key, None)
 
     def _cleanup_cooldowns(self, now_mono: float):
-        """Removes expired or irrelevant cooldowns from _key_cooldowns.
-
-        Removes entries if the cooldown end time is in the past (`<= now_mono`)
-        or if the key no longer exists in the main `self.data['keys']` dictionary.
-        """
+        """Removes expired or irrelevant cooldowns from _key_cooldowns."""
         keys_to_clear = []
         current_keys = self.data.get('keys', {}).keys()
-        for key, expiry_time in list(self._key_cooldowns.items()): # Iterate over copy of items
+        for key, expiry_time in list(self._key_cooldowns.items()):
             if expiry_time <= now_mono or key not in current_keys:
                 keys_to_clear.append(key)
-                # Log why the cooldown is being removed
-                if key in self._key_cooldowns: # Check if not already popped by another check
+                if key in self._key_cooldowns: # Check if not already popped
                     if expiry_time <= now_mono and key in current_keys:
                         logger.debug(f"Cooldown expired for key {key[:4]}...{key[-4:]}")
                     elif key not in current_keys:
                         logger.debug(f"Removing cooldown for key {key[:4]}...{key[-4:]} as key no longer exists.")
 
-        # Remove the identified keys from the cooldown dictionary
         for key in keys_to_clear:
             self._key_cooldowns.pop(key, None)
 
-    # --- Public Methods ---
-
     def add_key(self, api_key: str):
-        """Adds a new API key to the manager and saves the updated state."""
+        """Adds a new API key to the manager."""
         if not api_key or not isinstance(api_key, str):
             raise ValueError("API key must be a non-empty string.")
 
-        # Ensure usage data is up-to-date before adding
         self._check_and_reset_internal(self._get_now_utc())
 
-        # Ensure the 'keys' dictionary exists
         if 'keys' not in self.data or not isinstance(self.data['keys'], dict):
             self.data['keys'] = {}
 
         if api_key in self.data['keys']:
             raise ApiKeyManagerError(f"API key ending with '...{api_key[-4:]}' already exists.")
 
-        # Add the new key with default zero usage
         self.data['keys'][api_key] = {"usage_today": 0, "tokens_today": 0}
         logger.info(f"Added new API key: {api_key[:4]}...{api_key[-4:]}")
         self._save_data_internal()
 
     def remove_key(self, api_key: str):
-        """Removes an API key from the manager and saves the updated state.
-
-        Also cleans up any associated in-memory tracking data (timestamps, cooldowns).
-        """
-        # Ensure usage data is up-to-date before removing
+        """Removes an API key from the manager."""
         self._check_and_reset_internal(self._get_now_utc())
 
         if 'keys' not in self.data or api_key not in self.data.get('keys', {}):
             raise ApiKeyManagerError(f"API key '{api_key[:4]}...{api_key[-4:]}' not found.")
 
-        # Remove from persistent data
         del self.data['keys'][api_key]
-        # Remove from in-memory tracking
         self._key_timestamps.pop(api_key, None)
         self._key_token_timestamps.pop(api_key, None)
         self._key_cooldowns.pop(api_key, None)
@@ -705,62 +595,40 @@ class ApiKeyManager:
         self._save_data_internal()
 
     def is_key_usable(self, key: str, key_data: dict, now_mono: float) -> bool:
-        """Checks if a single key is currently usable based on all limits and cooldowns.
-
-        Args:
-            key: The API key string.
-            key_data: The dictionary containing usage data for the key.
-            now_mono: The current monotonic time (to avoid repeated calls).
-
-        Returns:
-            True if the key is usable, False otherwise.
-        """
+        """Checks if a single key is currently usable based on all limits."""
         if not isinstance(key_data, dict):
             logger.warning(f"Invalid key_data for key {key[:4]}...{key[-4:]}. Marking unusable.")
             return False
 
-        # 1. Check Cooldown: Is the key currently in a cooldown period?
+        # 1. Cooldown
         if key in self._key_cooldowns and self._key_cooldowns[key] > now_mono:
             return False
 
-        # 2. Check RPD (Requests Per Day): Has daily request limit been reached?
+        # 2. RPD
         if self.daily_limit is not None and key_data.get('usage_today', 0) >= self.daily_limit:
             return False
 
-        # 3. Check TPD (Tokens Per Day): Has daily token limit been reached?
+        # 3. TPD
         if self.tokens_per_day is not None and key_data.get('tokens_today', 0) >= self.tokens_per_day:
             return False
 
-        # 4. Check RPM (Requests Per Minute): Has requests limit in the last minute been reached?
-        # Assumes _cleanup_timestamps_internal ran recently to remove old timestamps.
+        # 4. RPM (Assumes cleanup ran recently)
         if self.requests_per_minute is not None and len(self._key_timestamps.get(key, [])) >= self.requests_per_minute:
             return False
 
-        # 5. Check TPM (Tokens Per Minute): Has token limit in the last minute been reached?
-        # Assumes _cleanup_timestamps_internal ran recently.
+        # 5. TPM (Assumes cleanup ran recently)
         if self.tokens_per_minute is not None:
-            # Sum tokens used in the relevant time window
             current_minute_tokens = sum(tokens for ts, tokens in self._key_token_timestamps.get(key, []))
             if current_minute_tokens >= self.tokens_per_minute:
                 return False
 
-        # If none of the limits are hit, the key is usable
         return True
 
     def get_key(self) -> str:
         """
-        Returns a single available API key based on current limits and cooldowns.
-
-        Performs necessary checks (reset, cleanup) before searching.
-        Iterates through keys and returns the first one found to be usable.
-
-        Returns:
-            A usable API key string.
-
-        Raises:
-            NoAvailableKeyError: If no keys are configured or all are currently unusable.
+        Returns a single available API key.
+        Raises NoAvailableKeyError if no keys are configured or all are unusable.
         """
-        # Ensure limits are up-to-date and timestamps are clean
         self._check_and_reset_internal(self._get_now_utc())
         self._cleanup_timestamps_internal()
         now_mono = self._get_monotonic_time()
@@ -769,32 +637,20 @@ class ApiKeyManager:
         if not keys_data:
             raise NoAvailableKeyError("No API keys configured.")
 
-        # Iterate through available keys and check usability
         for key, key_data in keys_data.items():
             if self.is_key_usable(key, key_data, now_mono):
                 return key
 
-        # If loop completes without finding a usable key
         raise NoAvailableKeyError("All API keys have reached limits or are on cooldown.")
 
     def get_keys(self, n: int = 1) -> typing.List[str]:
         """
         Returns a list of up to 'n' available API keys.
-
-        Similar to `get_key` but returns multiple keys if available.
-
-        Args:
-            n: The maximum number of keys to return (defaults to 1).
-
-        Returns:
-            A list of usable API key strings (may be empty if none are usable).
-
-        Raises:
-            NoAvailableKeyError: Only if no keys are configured at all.
+        Raises NoAvailableKeyError only if no keys are configured at all.
+        Returns empty list if keys exist but none are usable.
         """
         if n <= 0: n = 1
 
-        # Ensure limits are up-to-date and timestamps are clean
         self._check_and_reset_internal(self._get_now_utc())
         self._cleanup_timestamps_internal()
         now_mono = self._get_monotonic_time()
@@ -804,28 +660,23 @@ class ApiKeyManager:
              raise NoAvailableKeyError("No API keys configured.")
 
         usable_keys = []
-        # Iterate and collect usable keys up to the requested number 'n'
         for key, key_data in keys_data.items():
             if self.is_key_usable(key, key_data, now_mono):
                 usable_keys.append(key)
                 if len(usable_keys) == n:
-                    break # Stop once we have enough keys
+                    break
         return usable_keys
 
-    def record_usage(self, api_key: str, tokens_used: int = 0):
+    def record_usage(self, api_key: str, tokens_used: int = 1):
         """
-        Records usage (requests and tokens) for a specific API key.
-
-        Updates both the persistent daily counts in `self.data` (and saves)
-        and the in-memory minute counts for RPM/TPM tracking.
+        Records usage for a specific API key, updating daily and minute counts.
 
         Args:
-            api_key (str): The API key that was used.
-            tokens_used (int): The number of tokens consumed (non-negative). Defaults to 0.
-                               If 0, only the request count ('usage_today') is incremented.
+            api_key (str): The API key used.
+            tokens_used (int): Tokens consumed (non-negative). Defaults to 1.
 
         Raises:
-            ApiKeyManagerError: If the key is not found or key data structure is invalid.
+            ApiKeyManagerError: If key not found or data structure is invalid.
             ValueError: If tokens_used is negative or api_key is invalid.
         """
         if not isinstance(tokens_used, int) or tokens_used < 0:
@@ -833,7 +684,6 @@ class ApiKeyManager:
         if not api_key or not isinstance(api_key, str):
             raise ValueError("api_key must be a non-empty string.")
 
-        # Ensure limits/state are current before recording
         self._check_and_reset_internal(self._get_now_utc())
         self._cleanup_timestamps_internal()
         now_mono = self._get_monotonic_time()
@@ -851,30 +701,24 @@ class ApiKeyManager:
         if tokens_used > 0:
              key_data['tokens_today'] = key_data.get('tokens_today', 0) + tokens_used
 
-        # Add to in-memory minute counters (if limits are configured)
+        # Add to in-memory minute counters
         if self.requests_per_minute is not None:
             self._key_timestamps[api_key].append(now_mono)
         if self.tokens_per_minute is not None and tokens_used > 0:
             self._key_token_timestamps[api_key].append((now_mono, tokens_used))
 
-        # Save the updated daily counts
         self._save_data_internal()
 
     def mark_unusable(self, api_key: str, cooldown_seconds: int = 60):
         """
-        Marks a key as temporarily unusable by setting an in-memory cooldown.
-
-        This does NOT affect the persistent usage counts, only the in-memory
-        `_key_cooldowns` dictionary used by `is_key_usable`.
-        The cooldown is automatically cleared by `_cleanup_timestamps_internal`
-        once the duration expires.
+        Marks a key as unusable (in-memory cooldown).
 
         Args:
             api_key (str): The key to mark.
-            cooldown_seconds (int): Duration of the cooldown in seconds (non-negative). Defaults to 60.
+            cooldown_seconds (int): Cooldown duration (non-negative). Defaults to 60.
 
         Raises:
-            ApiKeyManagerError: If the key is not found.
+            ApiKeyManagerError: If key not found.
             ValueError: If cooldown_seconds is negative.
         """
         if not isinstance(cooldown_seconds, int) or cooldown_seconds < 0:
@@ -883,62 +727,40 @@ class ApiKeyManager:
         if 'keys' not in self.data or api_key not in self.data['keys']:
             raise ApiKeyManagerError(f"Cannot mark unknown key as unusable: {api_key[:4]}...{api_key[-4:]}")
 
-        # Calculate the monotonic time when the cooldown ends
         now_mono = self._get_monotonic_time()
         cooldown_end_time = now_mono + cooldown_seconds
-        # Store the end time in the cooldown dictionary
         self._key_cooldowns[api_key] = cooldown_end_time
         logger.info(f"Marked key {api_key[:4]}... unusable for {cooldown_seconds}s (until monotonic {cooldown_end_time:.2f}).")
-        # No save needed - this is transient, in-memory state
+        # No save needed - transient state
 
     def get_usage_stats(self) -> dict:
-        """Returns a deep copy of the current daily usage stats after ensuring data is current."""
+        """Returns current daily usage stats (deep copy) after ensuring data is current."""
         self._check_and_reset_internal(self._get_now_utc())
         return copy.deepcopy(self.data.get('keys', {}))
 
     def get_config(self) -> dict:
-        """ Returns a deep copy of the current configuration stored in the manager."""
-        # Ensure the config in self.data reflects the current instance state
+        """ Returns a copy of the current configuration."""
         self.data['config'] = self._get_current_config()
         return copy.deepcopy(self.data.get('config', {}))
 
     def get_last_reset_time(self) -> typing.Optional[datetime]:
-        """ Returns the last reset time as a timezone-aware UTC datetime object, or None if invalid/missing."""
+        """ Returns the last reset time as a timezone-aware UTC datetime object, or None."""
         return self._parse_last_reset_time()
 
-    # --- Context Manager --- #
-
     def __enter__(self):
-        """Context manager entry: gets a single available key.
-
-        Usage:
-            with api_key_manager as key:
-                # use the key
-                ...
-        """
-        self._active_key = self.get_key() # Raises NoAvailableKeyError if none found
+        """Context manager entry: gets a single available key."""
+        self._active_key = self.get_key()
         return self._active_key
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit: records usage (1 req, 0 tokens) if no exception occurred.
-
-        If an exception occurred within the `with` block, usage is NOT recorded.
-        The exception is re-raised.
-        If recording usage fails, an error is logged but the original exception (if any)
-        is still propagated.
-        """
+        """Context manager exit: records usage (1 req, 1 token) if no exception occurred."""
         key_to_record = self._active_key
-        self._active_key = None # Clear the active key regardless of outcome
+        self._active_key = None
 
         if exc_type is None and key_to_record:
-            # Only record usage if the 'with' block completed without errors
             try:
-                # Default to recording 1 request, 0 tokens for simple context manager use
-                self.record_usage(key_to_record, tokens_used=0)
+                self.record_usage(key_to_record, tokens_used=1)
             except (ApiKeyManagerError, ValueError, Exception) as e:
-                 # Log error during recording but don't suppress original exception
                  logger.error(f"Error recording usage in __exit__ for key '{key_to_record[:4]}...': {e}", exc_info=True)
 
-        # Return False to indicate that any exception raised in the 'with' block
-        # should be re-raised.
-        return False
+        return False # Re-raise exceptions from the 'with' block
