@@ -3,8 +3,7 @@ version: '3.8'
 services:
   apikeymanager:
     build: .
-    image: apikeymanager:latest
-    container_name: apikeymanager
+    container_name: ApiKeyManager
     ports:
       - "8000:8000"
     volumes:
@@ -14,7 +13,7 @@ services:
       - APIKEYMGR_HOST=0.0.0.0
       - APIKEYMGR_PORT=8000
       - APIKEYMGR_MAX_RETRIES=3
-      - APIKEYMGR_REQUEST_TIMEOUT=120
+      - APIKEYMGR_REQUEST_TIMEOUT=300
       - APIKEYMGR_STREAMING_TIMEOUT=600
     restart: unless-stopped
     healthcheck:
