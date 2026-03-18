@@ -29,6 +29,7 @@ class KeyInfo(BaseModel):
 class ModelConfig(BaseModel):
     limits: KeyLimits = KeyLimits()
     keys: Dict[str, KeyUsage] = {}
+    rotation_index: int = 0
 
 
 class ServiceConfig(BaseModel):
@@ -55,6 +56,7 @@ class DataManager(BaseModel):
     server: ServerConfig = ServerConfig()
     services: Dict[str, ServiceConfig] = {}
     analytics: Dict[str, Dict[str, AnalyticsEntry]] = {}
+    last_reset_date: Optional[str] = None
 
 
 class ServiceInfo(BaseModel):

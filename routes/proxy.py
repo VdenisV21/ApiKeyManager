@@ -75,8 +75,13 @@ async def proxy_request(
                 
                 modified_body = body_str.replace(APIKEY_PLACEHOLDER, api_key)
                 
-                if "authorization" in headers:
-                    headers["authorization"] = headers["authorization"].replace(APIKEY_PLACEHOLDER, api_key)
+                # 1. Replace placeholder universally in ALL headers (supports x-goog-api-key)
+                for h_key, h_val in headers.items():
+                    if isinstance(h_val, str) and APIKEY_PLACEHOLDER in h_val:
+                        headers[h_key] = h_val.replace(APIKEY_PLACEHOLDER, api_key)
+                
+                # 2. Also replace in the URL (supports query params like ?key=<apikey>)
+                current_target_url = target_url.replace(APIKEY_PLACEHOLDER, api_key)
                 
                 is_streaming = False
                 try:
@@ -109,8 +114,12 @@ async def proxy_request(
                     tokens_used = 0
                     try:
                         resp_json = response.json()
+                        # OpenAI / Anthropic format
                         if "usage" in resp_json:
                             tokens_used = resp_json["usage"].get("total_tokens", 0)
+                        # Gemini format
+                        elif "usageMetadata" in resp_json:
+                            tokens_used = resp_json["usageMetadata"].get("totalTokenCount", 0)
                     except (json.JSONDecodeError, TypeError, AttributeError):
                         pass
                     
@@ -187,6 +196,8 @@ async def handle_streaming_request(
                                 data = json.loads(line[6:])
                                 if 'usage' in data:
                                     total_tokens = data['usage'].get('total_tokens', 0)
+                                elif 'usageMetadata' in data:  # Gemini streaming support
+                                    total_tokens = data['usageMetadata'].get('totalTokenCount', 0)
                             except json.JSONDecodeError:
                                 pass
                     yield chunk

@@ -59,7 +59,6 @@ class ApiKeyManager:
         self._key_cooldowns: Dict[str, float] = {}
         
         self.data: Optional[DataManager] = None
-        self._global_usage_index = 0
         
         self._save_pending = False
         self._save_task: Optional[asyncio.Task] = None
@@ -140,7 +139,8 @@ class ApiKeyManager:
         now = self._get_now_utc()
         today_str = now.strftime("%Y-%m-%d")
         
-        if self._last_reset_date == today_str:
+        # Check the date in the persisted JSON data
+        if self.data.last_reset_date == today_str:
             return
         
         for service_name, service in self.data.services.items():
@@ -150,7 +150,8 @@ class ApiKeyManager:
                         usage.usage_today = 0
                         usage.tokens_today = 0
         
-        self._last_reset_date = today_str
+        # Save the new date back to the JSON data
+        self.data.last_reset_date = today_str
         self._save_data_sync()
 
     async def _check_and_reset_daily(self):
@@ -246,7 +247,7 @@ class ApiKeyManager:
 
     async def get_key(self, service: str, model: Optional[str] = None) -> Tuple[str, str]:
         """
-        Get the next available key for the service/model using round-robin rotation.
+        Get the next available key for the service/model using LRU rotation.
         Returns (key, resolved_model_name).
         """
         self._ensure_locks()
@@ -262,19 +263,16 @@ class ApiKeyManager:
             if not mdl.keys:
                 raise NoAvailableKeyError(f"No keys configured for {service}/{model}")
             
-            min_index = float('inf')
-            best_key = None
-            best_usage = None
+            keys_list = sorted(mdl.keys.keys())
+            num_keys = len(keys_list)
             
-            for key, usage in mdl.keys.items():
+            for offset in range(num_keys):
+                idx = (mdl.rotation_index + offset) % num_keys
+                key = keys_list[idx]
+                usage = mdl.keys[key]
+                
                 if self._is_key_usable(key, usage, limits, now_mono):
-                    if usage.last_used_index < min_index:
-                        min_index = usage.last_used_index
-                        best_key = key
-                        best_usage = usage
-            
-            if best_key:
-                return best_key, model
+                    return key, model
             
             raise NoAvailableKeyError(f"All keys exhausted for {service}/{model}")
 
@@ -292,8 +290,9 @@ class ApiKeyManager:
             if tokens > 0:
                 usage.tokens_today += tokens
             
-            self._global_usage_index += 1
-            usage.last_used_index = self._global_usage_index
+            keys_list = sorted(mdl.keys.keys())
+            key_index = keys_list.index(key)
+            mdl.rotation_index = (key_index + 1) % len(keys_list)
             
             now_mono = self._get_monotonic_time()
             self._key_timestamps[key].append(now_mono)
