@@ -3,11 +3,11 @@ __pycache__/
 GeminiClient.py
 test5.py
 .venv
-__init__.py
+
 
 *.txt
 
-test_apikeymanager.py
+
 *.pyc
 .env
 data/api_keys.json
